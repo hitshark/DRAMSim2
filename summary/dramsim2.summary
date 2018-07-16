@@ -1,0 +1,90 @@
+1. SimulatorObject:
+    public:  currentClockCycle;
+             void step();
+             void update() = 0;
+
+   SystemConfiguration.h: declaration of the global variables; include the DRAM configurable information;
+   PrintMacros.h: some debug/print macro definitions;
+
+2. BusPacket: the packet between dram controller and dram chip(here is the bank instance);
+   Transaction: the packet between cpu and dram controller, no data storage;
+
+3. BankState: bank state, notice the public member variables;
+   Bank: the outer interfaces contain the read/write via the busPacket object;
+         sparse storage, for each column a linked list is created; if a row is accessed in the column,
+         then search the list, if first accessed, a new node is dynamic created and inserted in the list;
+         TODO:optimise the linked list to speed up;
+   Rank:
+         rank class, two interface need to be taken care:
+         void receiveFromBus(BusPacket *); packet from memory controller; used to update the related bank members
+         for write request;
+         void update(); for read command, it needs to return the read data to memory controller; this interface
+         model the per-tick behavior of the rank for read command; if read latency meets, it pass the data to
+         memory controller via its interface; Rank objects own a MemoryController pointer to call its method;
+         a queue is used for buffer the outstanding read requests;
+         the command time constraints are checked and update via the bankState objects, so the requests should
+         be issued at the right cycle considering the time constraints;
+
+4. CommandQueue: the bus packet queue maintained in memory controller;
+         void enqueue(BusPacket *); insert a bus packet to the 3D queue: rank-bank-packet;
+         bool pop(BusPacket **); the main scheduling method, called every clock cycle, if a bus packet is met
+         the requirement, then return this packet to dispatch to dram;
+         void needRefresh(unsigned rank); this method is provided for the requirement of generating
+         refresh request to dram, which is not explicitly issue from cpu to CommandQueue;
+   AddressMapping:
+         just a function; extract the channel:rank:bank:row:column_high index from physical address;
+   MemoryController:
+         bool addTransaction(Transaction *); add transaction from outer world;
+         void returnReadData(const Transaction *); return read data to the outer world; in this method, it
+         calls the MemorySystem's ReturnReadData function, which is a callback;
+         void receiveFromBus(BusPacket *); used by the Rank class to notify the read completion; data
+         phase, but the data is ignored;
+         void update();
+            per-cycle action, including: update bank state, check cmd/data write done, dispatch command
+            to Rank from commandQueue, parse the transaction from transaction queue if CQ is not full;
+            and update the power/statistic info;
+   MemorySystem:
+         bool addTransaction(bool isWrite, uint64_t addr); add transaction;
+         void update(); per-cycle action; call the contained class object's update();
+         void RegisterCallbacks(Callback_t *readDone, Callback_t *writeDone, void (*reportPower)(...));
+            the interface for outer world to regist callback functions;
+         the constructor will overwrite the NUM_RANKS if memory volume parameter is provided;
+   MultiChannelMemorySystem:
+         the top module class, the important interface is re-declared in DRAMSim.h file;
+         bool addTransaction(bool isWrite, uint64_t addr); and a register method:
+         void RegisterCallbacks(...); for each channel, the same callback functions apply;
+         void update(); call the clockdomainCrosser.update();
+         void setCPUClockSpeed(uint64_t cpuClkFreqHz); set cpu clock frequency;
+         
+
+5. IniReader: parse the .ini file and update the global variables;
+   CSVWriter: a csv formated output helper class;
+
+6. ClockDomain:
+    the clockDomainCrosser class handles the clock domain between cpu and dram,
+    in multichannelmemorysystem class, it contains a clockdomaincrosser class member, it uses this class
+    member to call the clockdomaincrosser::udpate() to activate the per-cycle action, which is through a
+    pointer to a callback class;
+    the callback class here, introduce a method to use other class member function indirectly; but
+    too complicated and ugly as i can see;
+
+7. main:
+    the clock cycle is follow as transaction issued cycle, which means the cpu clock cycle; the transaction is
+    added at the right time indicated in the trace file, if transaction queue is full, the dispatch cycle may
+    be later;
+    the transactionReceiver class, used as the consumer of the callback function; pay attention to this usage;
+    the cpu clock frequency setting method; the whole system's reference clock is the clock in cpu
+    domain, so if cpu clock is faster than the dram clock, just set the cpu clock through this method; but
+    its implementation may be overflowed, take care!
+    
+summary:
+    1. ClockDomain counter may be overflow; revise the setCPUClockSpeed() method;
+    2. the bank, sparse data structure, taken the burst into account; so the NUM_COLS linklists will not all be accessed;
+    3. NO_STORAGE, if defined, no read/write data are passed; for buspacket and transaction.
+        transaction'storage is depreciated, cause its copy constructor is not implemented properly;
+        but we can use the callback to handle the read/write data;
+    4. data storage branch; if necessary, we can implement it by the callback functions;
+    5. the clock concept is not the event-driven model, it is the loop function which every iteration
+        is taken as a clock cycle;
+    6. a test program in dramtest directory;
+
